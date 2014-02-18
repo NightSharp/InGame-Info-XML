@@ -1,8 +1,9 @@
 package com.github.lunatrius.ingameinfo.parser.xml;
 
-import com.github.lunatrius.ingameinfo.InGameInfoXML;
+import com.github.lunatrius.ingameinfo.Alignment;
 import com.github.lunatrius.ingameinfo.Utils;
 import com.github.lunatrius.ingameinfo.Value;
+import com.github.lunatrius.ingameinfo.lib.Reference;
 import com.github.lunatrius.ingameinfo.parser.IParser;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -30,21 +31,21 @@ public class XmlParser implements IParser {
 			this.document = dBuilder.parse(file);
 			this.document.getDocumentElement().normalize();
 		} catch (Exception e) {
-			InGameInfoXML.LOGGER.log(Level.SEVERE, "Could not read xml configuration file!", e);
+			Reference.logger.log(Level.SEVERE, "Could not read xml configuration file!", e);
 		}
 		return true;
 	}
 
 	@Override
-	public boolean parse(Map<String, List<List<Value>>> format) {
+	public boolean parse(Map<Alignment, List<List<Value>>> format) {
 		Element documentElement = this.document.getDocumentElement();
 		NodeList nodeListLines = documentElement.getChildNodes();
 		for (int i = 0; i < nodeListLines.getLength(); i++) {
 			Element elementLines = getElement(nodeListLines.item(i), "lines");
 			if (elementLines != null) {
-				String position = Utils.getPosition(elementLines.getAttribute("at"));
-				if (position != null) {
-					format.put(position, getLines(elementLines));
+				Alignment alignment = Alignment.parse(elementLines.getAttribute("at"));
+				if (alignment != null) {
+					format.put(alignment, getLines(elementLines));
 				}
 			}
 		}

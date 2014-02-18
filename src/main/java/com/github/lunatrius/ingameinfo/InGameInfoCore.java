@@ -1,5 +1,9 @@
 package com.github.lunatrius.ingameinfo;
 
+import com.github.lunatrius.ingameinfo.client.gui.Info;
+import com.github.lunatrius.ingameinfo.client.gui.InfoIcon;
+import com.github.lunatrius.ingameinfo.client.gui.InfoItem;
+import com.github.lunatrius.ingameinfo.client.gui.InfoText;
 import com.github.lunatrius.ingameinfo.parser.IParser;
 import com.github.lunatrius.ingameinfo.parser.json.JsonParser;
 import com.github.lunatrius.ingameinfo.parser.text.TextParser;
@@ -10,8 +14,10 @@ import com.github.lunatrius.ingameinfo.serializer.text.TextSerializer;
 import com.github.lunatrius.ingameinfo.serializer.xml.XmlSerializer;
 import net.minecraft.block.Block;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.entity.EntityClientPlayerMP;
 import net.minecraft.client.gui.FontRenderer;
 import net.minecraft.client.gui.ScaledResolution;
+import net.minecraft.client.resources.I18n;
 import net.minecraft.client.resources.Resource;
 import net.minecraft.entity.player.EntityPlayer;
 import net.minecraft.item.Item;
@@ -36,17 +42,17 @@ import static com.github.lunatrius.ingameinfo.Value.ValueType;
 
 public class InGameInfoCore {
 	public static final InGameInfoCore instance = new InGameInfoCore();
+	private final Comparator<EntityPlayer> playerDistanceComparator;
 
 	private IParser parser;
 
-	private Minecraft minecraftClient = null;
+	private Minecraft minecraftClient = Minecraft.getMinecraft();
 	private MinecraftServer minecraftServer = null;
 	private World world = null;
-	private EntityPlayer player = null;
-	private ScaledResolution scaledResolution = null;
+	private EntityClientPlayerMP player = null;
 	private File configDirectory = null;
 	private File configFile = null;
-	private final Map<String, List<List<Value>>> format = new HashMap<String, List<List<Value>>>();
+	private final Map<Alignment, List<List<Value>>> format = new HashMap<Alignment, List<List<Value>>>();
 	private final String[] difficulties = new String[] {
 			"options.difficulty.peaceful",
 			"options.difficulty.easy",
@@ -70,11 +76,38 @@ public class InGameInfoCore {
 	};
 	private final Vector3f playerMotion = new Vector3f();
 	private PotionEffect[] potionEffects = null;
+	private EntityPlayer[] nearbyPlayers = null;
 	private boolean hasSeed;
 	private long seed = 0;
-	private final Map<String, List<String>> valuePairs = new HashMap<String, List<String>>();
+	private final List<Info> info = new ArrayList<Info>();
+	private final List<Info> infoItemQueue = new ArrayList<Info>();
 
 	private InGameInfoCore() {
+		this.playerDistanceComparator = new Comparator<EntityPlayer>() {
+			@Override
+			public int compare(EntityPlayer playerA, EntityPlayer playerB) {
+				EntityPlayer player = InGameInfoCore.this.player;
+				if (player == null) {
+					return 0;
+				}
+
+				double distanceA = player.getDistanceSqToEntity(playerA);
+				double distanceB = player.getDistanceSqToEntity(playerB);
+				if (distanceA > distanceB) {
+					return 1;
+				} else if (distanceA < distanceB) {
+					return -1;
+				}
+				return 0;
+			}
+		};
+	}
+
+	public void reset() {
+		this.world = null;
+		this.player = null;
+		this.potionEffects = null;
+		this.nearbyPlayers = null;
 	}
 
 	public boolean setConfigDirectory(File directory) {
@@ -119,102 +152,82 @@ public class InGameInfoCore {
 		}
 	}
 
-	public void setClient(Minecraft client) {
-		this.minecraftClient = client;
-	}
-
 	public void onTickClient() {
+		ScaledResolution scaledResolution = new ScaledResolution(this.minecraftClient.gameSettings, this.minecraftClient.displayWidth, this.minecraftClient.displayHeight);
+
 		this.world = this.minecraftClient.theWorld;
 		this.player = this.minecraftClient.thePlayer;
-
-		this.scaledResolution = new ScaledResolution(this.minecraftClient.gameSettings, this.minecraftClient.displayWidth, this.minecraftClient.displayHeight);
 
 		this.playerPosition[0] = (int) Math.floor(this.player.posX);
 		this.playerPosition[1] = (int) Math.floor(this.player.posY);
 		this.playerPosition[2] = (int) Math.floor(this.player.posZ);
 		this.playerMotion.set((float) (this.player.posX - this.player.prevPosX), (float) (this.player.posY - this.player.prevPosY), (float) (this.player.posZ - this.player.prevPosZ));
 
-		Collection<PotionEffect> potionEffectCollection = this.player.getActivePotionEffects();
-		this.potionEffects = new PotionEffect[potionEffectCollection.size()];
-		if (potionEffectCollection.size() > 0) {
-			int index = 0;
+		this.potionEffects = null;
+		this.nearbyPlayers = null;
 
-			for (PotionEffect potionEffect : potionEffectCollection) {
-				this.potionEffects[index++] = potionEffect;
-			}
-		}
+		this.info.clear();
+		int x, y;
 
-		Set<String> keys = this.format.keySet();
-		for (String key : keys) {
-			List<List<Value>> lines = this.format.get(key);
-
-			List<String> stringLines = new ArrayList<String>();
-			this.valuePairs.put(key, stringLines);
-
-			for (List<Value> line : lines) {
-				String str = "";
-				for (int i = 0; i < line.size(); i++) {
-					str += getValue(line.get(i));
-				}
-
-				if (!str.isEmpty()) {
-					stringLines.add(replaceVariables(str));
-				}
-			}
-		}
-	}
-
-	public void onTickRender() {
-		int x = 0, y = 0, type = -1;
-
-		GL11.glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-
-		Set<String> keys = this.valuePairs.keySet();
-		for (String key : keys) {
-			List<String> lines = this.valuePairs.get(key);
+		for (Alignment alignment : Alignment.values()) {
+			List<List<Value>> lines = this.format.get(alignment);
 
 			if (lines == null) {
 				continue;
 			}
 
-			if (key.contains("top")) {
-				y = 2;
-			} else if (key.contains("mid")) {
-				y = this.scaledResolution.getScaledHeight() / 2 - lines.size() * 10 / 2;
-			} else if (key.contains("bot")) {
-				y = this.scaledResolution.getScaledHeight() - lines.size() * 10 - 2;
-			} else {
-				continue;
-			}
+			FontRenderer fontRenderer = this.minecraftClient.fontRenderer;
+			List<Info> queue = new ArrayList<Info>();
 
-			if (key.contains("left")) {
-				x = 2;
-				type = 0;
-			} else if (key.contains("center")) {
-				x = this.scaledResolution.getScaledWidth() / 2;
-				type = 1;
-			} else if (key.contains("right")) {
-				x = this.scaledResolution.getScaledWidth() - 2;
-				type = 2;
-			} else {
-				continue;
-			}
+			for (List<Value> line : lines) {
+				String str = "";
 
-			for (String line : lines) {
-				switch (type) {
-				case 0:
-					drawLeftAlignedString(this.minecraftClient.fontRenderer, line, x, y, 0x00FFFFFF);
-					break;
-				case 1:
-					drawCenteredString(this.minecraftClient.fontRenderer, line, x, y, 0x00FFFFFF);
-					break;
-				case 2:
-					drawRightAlignedString(this.minecraftClient.fontRenderer, line, x, y, 0x00FFFFFF);
-					break;
+				this.infoItemQueue.clear();
+				for (Value value : line) {
+					str += getValue(value);
 				}
 
-				y += 10;
+				if (!str.isEmpty()) {
+					str = replaceVariables(str);
+
+					String processed = str.replaceAll("\\{ICON\\|( *)\\}", "$1");
+
+					x = alignment.getX(scaledResolution.getScaledWidth(), fontRenderer.getStringWidth(processed));
+					InfoText text = new InfoText(fontRenderer, processed, x, 0);
+
+					if (this.infoItemQueue.size() > 0) {
+						Pattern pattern = Pattern.compile("\\{ICON\\|( *)\\}", Pattern.CASE_INSENSITIVE);
+						Matcher matcher = pattern.matcher(str);
+
+						for (int i = 0; i < this.infoItemQueue.size() && matcher.find(); i++) {
+							Info item = this.infoItemQueue.get(i);
+							item.x = fontRenderer.getStringWidth(str.substring(0, matcher.start()));
+							text.children.add(item);
+
+							str = str.replaceFirst(Pattern.quote(matcher.group(0)), matcher.group(1));
+							matcher.reset(str);
+						}
+					}
+					queue.add(text);
+				}
 			}
+
+			y = alignment.getY(scaledResolution.getScaledHeight(), queue.size() * (fontRenderer.FONT_HEIGHT + 1));
+			for (Info item : queue) {
+				item.y = y;
+				this.info.add(item);
+				y += fontRenderer.FONT_HEIGHT + 1;
+			}
+
+			this.info.addAll(queue);
+		}
+	}
+
+	public void onTickRender() {
+		GL11.glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+
+		for (Info info : this.info) {
+			info.draw();
 		}
 
 		GL11.glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
@@ -254,7 +267,8 @@ public class InGameInfoCore {
 	}
 
 	public boolean reloadConfig() {
-		this.valuePairs.clear();
+		this.info.clear();
+		this.infoItemQueue.clear();
 		this.format.clear();
 
 		if (this.parser == null) {
@@ -282,7 +296,6 @@ public class InGameInfoCore {
 		}
 
 		return serializer != null && serializer.save(file, this.format);
-
 	}
 
 	private String replaceVariables(String str) {
@@ -296,34 +309,39 @@ public class InGameInfoCore {
 	}
 
 	private String getValue(Value value) {
+		int size = value.values.size();
+		if (!value.type.validSize(size)) {
+			return "";
+		}
+
 		if (value.type.equals(ValueType.STR)) {
 			return value.value;
 		} else if (value.type.equals(ValueType.NUM)) {
 			return value.value;
 		} else if (value.type.equals(ValueType.VAR)) {
 			return getVariableValue(value.value);
-		} else if (value.type.equals(ValueType.IF) && (value.values.size() == 2 || value.values.size() == 3)) {
+		} else if (value.type.equals(ValueType.IF)) {
 			try {
-				if (Boolean.parseBoolean(getValue(value.values.get(0)))) {
-					return getValue(value.values.get(1));
+				if (getBooleanValue(value, 0)) {
+					return getValue(value, 1);
 				}
-				if (value.values.size() > 2) {
-					return getValue(value.values.get(2));
+				if (size > 2) {
+					return getValue(value, 2);
 				}
 				return "";
 			} catch (Exception e) {
 				return "?";
 			}
-		} else if (value.type.equals(ValueType.NOT) && value.values.size() == 1) {
+		} else if (value.type.equals(ValueType.NOT)) {
 			try {
-				return Boolean.toString(!Boolean.parseBoolean(getValue(value.values.get(0))));
+				return Boolean.toString(!getBooleanValue(value, 0));
 			} catch (Exception e) {
 				return "?";
 			}
 		} else if (value.type.equals(ValueType.AND)) {
 			try {
 				for (Value operand : value.values) {
-					if (!Boolean.parseBoolean(getValue(operand))) {
+					if (!getBooleanValue(operand)) {
 						return Boolean.toString(false);
 					}
 				}
@@ -334,7 +352,7 @@ public class InGameInfoCore {
 		} else if (value.type.equals(ValueType.OR)) {
 			try {
 				for (Value operand : value.values) {
-					if (Boolean.parseBoolean(getValue(operand))) {
+					if (getBooleanValue(operand)) {
 						return Boolean.toString(true);
 					}
 				}
@@ -346,18 +364,18 @@ public class InGameInfoCore {
 			try {
 				boolean result = false;
 				for (Value operand : value.values) {
-					result = result ^ Boolean.parseBoolean(getValue(operand));
+					result = result ^ getBooleanValue(operand);
 				}
 				return Boolean.toString(result);
 			} catch (Exception e) {
 				return "?";
 			}
-		} else if (value.type.equals(ValueType.GREATER) && value.values.size() > 1) {
+		} else if (value.type.equals(ValueType.GREATER)) {
 			try {
-				double current = Double.parseDouble(getValue(value.values.get(0)));
+				double current = getDoubleValue(value, 0);
 
-				for (Value operand : value.values.subList(1, value.values.size())) {
-					double next = Double.parseDouble(getValue(operand));
+				for (Value operand : value.values.subList(1, size)) {
+					double next = getDoubleValue(operand);
 					if (current > next) {
 						current = next;
 					} else {
@@ -368,12 +386,12 @@ public class InGameInfoCore {
 			} catch (Exception e) {
 				return "?";
 			}
-		} else if (value.type.equals(ValueType.LESSER) && value.values.size() > 1) {
+		} else if (value.type.equals(ValueType.LESSER)) {
 			try {
-				double current = Double.parseDouble(getValue(value.values.get(0)));
+				double current = getDoubleValue(value, 0);
 
-				for (Value operand : value.values.subList(1, value.values.size())) {
-					double next = Double.parseDouble(getValue(operand));
+				for (Value operand : value.values.subList(1, size)) {
+					double next = getDoubleValue(operand);
 					if (current < next) {
 						current = next;
 					} else {
@@ -384,21 +402,21 @@ public class InGameInfoCore {
 			} catch (Exception e) {
 				return "?";
 			}
-		} else if (value.type.equals(ValueType.EQUAL) && value.values.size() > 1) {
+		} else if (value.type.equals(ValueType.EQUAL)) {
 			try {
-				double current = Double.parseDouble(getValue(value.values.get(0)));
+				double current = getDoubleValue(value, 0);
 
-				for (Value operand : value.values.subList(1, value.values.size())) {
-					double next = Double.parseDouble(getValue(operand));
+				for (Value operand : value.values.subList(1, size)) {
+					double next = getDoubleValue(operand);
 					if (current != next) {
 						return Boolean.toString(false);
 					}
 				}
 				return Boolean.toString(true);
 			} catch (Exception e) {
-				String current = getValue(value.values.get(0));
+				String current = getValue(value, 0);
 
-				for (Value operand : value.values.subList(1, value.values.size())) {
+				for (Value operand : value.values.subList(1, size)) {
 					String next = getValue(operand);
 					if (!current.equals(next)) {
 						return Boolean.toString(false);
@@ -406,10 +424,10 @@ public class InGameInfoCore {
 				}
 				return Boolean.toString(true);
 			}
-		} else if (value.type.equals(ValueType.PCT) && value.values.size() == 2) {
+		} else if (value.type.equals(ValueType.PCT)) {
 			try {
-				double arg0 = Double.parseDouble(getValue(value.values.get(0)));
-				double arg1 = Double.parseDouble(getValue(value.values.get(1)));
+				double arg0 = getDoubleValue(value, 0);
+				double arg1 = getDoubleValue(value, 1);
 				return Double.toString(arg0 / arg1 * 100);
 			} catch (Exception e) {
 				return "0";
@@ -420,78 +438,78 @@ public class InGameInfoCore {
 				str += getValue(val);
 			}
 			return str;
-		} else if (value.type.equals(ValueType.MAX) && (value.values.size() == 2 || value.values.size() == 4)) {
+		} else if (value.type.equals(ValueType.MAX)) {
 			try {
-				double arg0 = Double.parseDouble(getValue(value.values.get(0)));
-				double arg1 = Double.parseDouble(getValue(value.values.get(1)));
-				int shift = value.values.size() - 2;
-				return arg0 > arg1 ? getValue(value.values.get(0 + shift)) : getValue(value.values.get(1 + shift));
+				double arg0 = getDoubleValue(value, 0);
+				double arg1 = getDoubleValue(value, 1);
+				int shift = size - 2;
+				return arg0 > arg1 ? getValue(value, 0 + shift) : getValue(value, 1 + shift);
 			} catch (Exception e) {
 				return "0";
 			}
-		} else if (value.type.equals(ValueType.MIN) && (value.values.size() == 2 || value.values.size() == 4)) {
+		} else if (value.type.equals(ValueType.MIN)) {
 			try {
-				double arg0 = Double.parseDouble(getValue(value.values.get(0)));
-				double arg1 = Double.parseDouble(getValue(value.values.get(1)));
-				int shift = value.values.size() - 2;
-				return arg0 < arg1 ? getValue(value.values.get(0 + shift)) : getValue(value.values.get(1 + shift));
+				double arg0 = getDoubleValue(value, 0);
+				double arg1 = getDoubleValue(value, 1);
+				int shift = size - 2;
+				return arg0 < arg1 ? getValue(value, 0 + shift) : getValue(value, 1 + shift);
 			} catch (Exception e) {
 				return "0";
 			}
-		} else if (value.type.equals(ValueType.ADD) && value.values.size() == 2) {
+		} else if (value.type.equals(ValueType.ADD)) {
 			try {
-				int arg0 = Integer.parseInt(getValue(value.values.get(0)));
-				int arg1 = Integer.parseInt(getValue(value.values.get(1)));
+				int arg0 = getIntValue(value, 0);
+				int arg1 = getIntValue(value, 1);
 				return Integer.toString(arg0 + arg1);
 			} catch (Exception e1) {
 				try {
-					double arg0 = Double.parseDouble(getValue(value.values.get(0)));
-					double arg1 = Double.parseDouble(getValue(value.values.get(1)));
+					double arg0 = getDoubleValue(value, 0);
+					double arg1 = getDoubleValue(value, 1);
 					return Double.toString(arg0 + arg1);
 				} catch (Exception e2) {
 					return "0";
 				}
 			}
-		} else if (value.type.equals(ValueType.SUB) && value.values.size() == 2) {
+		} else if (value.type.equals(ValueType.SUB)) {
 			try {
-				int arg0 = Integer.parseInt(getValue(value.values.get(0)));
-				int arg1 = Integer.parseInt(getValue(value.values.get(1)));
+				int arg0 = getIntValue(value, 0);
+				int arg1 = getIntValue(value, 1);
 				return Integer.toString(arg0 - arg1);
 			} catch (Exception e1) {
 				try {
-					double arg0 = Double.parseDouble(getValue(value.values.get(0)));
-					double arg1 = Double.parseDouble(getValue(value.values.get(1)));
+					double arg0 = getDoubleValue(value, 0);
+					double arg1 = getDoubleValue(value, 1);
 					return Double.toString(arg0 - arg1);
 				} catch (Exception e2) {
 					return "0";
 				}
 			}
-		} else if (value.type.equals(ValueType.MUL) && value.values.size() == 2) {
+		} else if (value.type.equals(ValueType.MUL)) {
 			try {
-				int arg0 = Integer.parseInt(getValue(value.values.get(0)));
-				int arg1 = Integer.parseInt(getValue(value.values.get(1)));
+				int arg0 = getIntValue(value, 0);
+				int arg1 = getIntValue(value, 1);
 				return Integer.toString(arg0 * arg1);
 			} catch (Exception e1) {
 				try {
-					double arg0 = Double.parseDouble(getValue(value.values.get(0)));
-					double arg1 = Double.parseDouble(getValue(value.values.get(1)));
+					double arg0 = getDoubleValue(value, 0);
+					double arg1 = getDoubleValue(value, 1);
 					return Double.toString(arg0 * arg1);
 				} catch (Exception e2) {
 					return "0";
 				}
 			}
-		} else if (value.type.equals(ValueType.DIV) && value.values.size() == 2) {
+		} else if (value.type.equals(ValueType.DIV)) {
 			try {
-				double arg0 = Double.parseDouble(getValue(value.values.get(0)));
-				double arg1 = Double.parseDouble(getValue(value.values.get(1)));
+				double arg0 = getDoubleValue(value, 0);
+				double arg1 = getDoubleValue(value, 1);
 				return Double.toString(arg0 / arg1);
 			} catch (Exception e2) {
 				return "0";
 			}
-		} else if (value.type.equals(ValueType.ROUND) && value.values.size() == 2) {
+		} else if (value.type.equals(ValueType.ROUND)) {
 			try {
-				double arg0 = Double.parseDouble(getValue(value.values.get(0)));
-				int arg1 = Integer.parseInt(getValue(value.values.get(1)));
+				double arg0 = getDoubleValue(value, 0);
+				int arg1 = getIntValue(value, 1);
 				double dec = Math.pow(10, arg1);
 				if (arg1 > 0) {
 					return String.format(Locale.ENGLISH, "%." + arg1 + "f", arg0);
@@ -500,29 +518,28 @@ public class InGameInfoCore {
 			} catch (Exception e2) {
 				return "0";
 			}
-		} else if (value.type.equals(ValueType.MOD) && value.values.size() == 2) {
+		} else if (value.type.equals(ValueType.MOD)) {
 			try {
-				double arg0 = Double.parseDouble(getValue(value.values.get(0)));
-				double arg1 = Double.parseDouble(getValue(value.values.get(1)));
+				double arg0 = getDoubleValue(value, 0);
+				double arg1 = getDoubleValue(value, 1);
 				return Double.toString(Math.round((arg0 % arg1) * 10e6) / 10e6);
 			} catch (Exception e2) {
-				e2.printStackTrace();
 				return "0";
 			}
-		} else if (value.type.equals(ValueType.MODI) && value.values.size() == 2) {
+		} else if (value.type.equals(ValueType.MODI)) {
 			try {
-				int arg0 = Integer.parseInt(getValue(value.values.get(0)));
-				int arg1 = Integer.parseInt(getValue(value.values.get(1)));
+				int arg0 = getIntValue(value, 0);
+				int arg1 = getIntValue(value, 1);
 				return Integer.toString(arg0 % arg1);
 			} catch (Exception e2) {
 				return "0";
 			}
-		} else if (value.type.equals(ValueType.ITEMQUANTITY) && (value.values.size() == 1 || value.values.size() == 2)) {
+		} else if (value.type.equals(ValueType.ITEMQUANTITY)) {
 			try {
 				int itemID = 0, itemDamage = -1;
-				itemID = Integer.parseInt(getValue(value.values.get(0)));
-				if (value.values.size() == 2) {
-					itemDamage = Integer.parseInt(getValue(value.values.get(1)));
+				itemID = getIntValue(value, 0);
+				if (size == 2) {
+					itemDamage = getIntValue(value, 1);
 				}
 				return Integer.toString(getItemCountInInventory(this.player, itemID, itemDamage));
 			} catch (Exception e2) {
@@ -530,13 +547,97 @@ public class InGameInfoCore {
 			}
 		} else if (value.type.equals(ValueType.TRANS)) {
 			try {
-				return StatCollector.translateToLocal(value.value);
+				String format = getValue(value, 0);
+				String[] args = new String[size - 1];
+				for (int i = 0; i < args.length; i++) {
+					args[i] = getValue(value, i + 1);
+				}
+				return I18n.getStringParams(format, args);
 			} catch (Exception e) {
+				return "?";
+			}
+		} else if (value.type.equals(ValueType.ICON)) {
+			try {
+				String what = getValue(value, 0);
+
+				if (size == 1 || size == 2) {
+					InfoItem item;
+					ItemStack itemStack;
+
+					int metadata = 0;
+					if (size == 2) {
+						metadata = getIntValue(value, 1);
+					}
+
+					try {
+						itemStack = new ItemStack(Integer.parseInt(what), 1, metadata);
+						if (itemStack.getItem() != null) {
+							item = new InfoItem(this.minecraftClient.fontRenderer, itemStack);
+							this.infoItemQueue.add(item);
+							return getIconTag(item);
+						}
+					} catch (Exception e) {
+					}
+				}
+
+				InfoIcon icon = new InfoIcon(what);
+				int index = 0;
+
+				if (size == 5 || size == 11) {
+					int displayX = getIntValue(value, ++index);
+					int displayY = getIntValue(value, ++index);
+					int displayWidth = getIntValue(value, ++index);
+					int displayHeight = getIntValue(value, ++index);
+					icon.setDisplayDimensions(displayX, displayY, displayWidth, displayHeight);
+				}
+
+				if (size == 7 || size == 11) {
+					int iconX = getIntValue(value, ++index);
+					int iconY = getIntValue(value, ++index);
+					int iconWidth = getIntValue(value, ++index);
+					int iconHeight = getIntValue(value, ++index);
+					int textureWidth = getIntValue(value, ++index);
+					int textureHeight = getIntValue(value, ++index);
+					icon.setTextureData(iconX, iconY, iconWidth, iconHeight, textureWidth, textureHeight);
+				}
+
+				this.infoItemQueue.add(icon);
+				return getIconTag(icon);
+			} catch (Exception e) {
+				e.printStackTrace();
 				return "?";
 			}
 		}
 
 		return "";
+	}
+
+	private String getValue(Value value, int index) {
+		return getValue(value.values.get(index));
+	}
+
+	private int getIntValue(Value value) {
+		return Integer.parseInt(getValue(value));
+	}
+
+	private int getIntValue(Value value, int index) {
+		return Integer.parseInt(getValue(value, index));
+	}
+
+	private double getDoubleValue(Value value) {
+		return Double.parseDouble(getValue(value));
+	}
+
+	private double getDoubleValue(Value value, int index) {
+		return Double.parseDouble(getValue(value, index));
+	}
+
+	private boolean getBooleanValue(Value value) {
+		return Boolean.parseBoolean(getValue(value));
+	}
+
+	private boolean getBooleanValue(Value value, int index) {
+		return Boolean.parseBoolean(getValue(value, index));
 	}
 
 	private String getVariableValue(String var) {
@@ -601,6 +702,14 @@ public class InGameInfoCore {
 				} catch (Exception var12) {
 					return "0";
 				}
+			} else if (var.equalsIgnoreCase("chunkx")) {
+				return Integer.toString(this.playerPosition[0] >> 4);
+			} else if (var.equalsIgnoreCase("chunkz")) {
+				return Integer.toString(this.playerPosition[2] >> 4);
+			} else if (var.equalsIgnoreCase("chunkoffsetx")) {
+				return Integer.toString(this.playerPosition[0] & 0x0F);
+			} else if (var.equalsIgnoreCase("chunkoffsetz")) {
+				return Integer.toString(this.playerPosition[2] & 0x0F);
 			} else if (var.equalsIgnoreCase("x")) {
 				return String.format(Locale.ENGLISH, "%.2f", this.player.posX);
 			} else if (var.equalsIgnoreCase("y")) {
@@ -627,6 +736,14 @@ public class InGameInfoCore {
 				return String.format("%.2f", Math.abs(this.playerMotion.z));
 			} else if (var.equalsIgnoreCase("speedxz")) {
 				return String.format("%.2f", Math.sqrt(this.playerMotion.x * this.playerMotion.x + this.playerMotion.z * this.playerMotion.z));
+			} else if (var.equalsIgnoreCase("direction")) {
+				float direction = this.player.rotationYaw % 360;
+				if (direction >= 180) {
+					direction -= 360;
+				} else if (direction < -180) {
+					direction += 360;
+				}
+				return String.format("%.2f", direction);
 			} else if (var.equalsIgnoreCase("roughdirection")) {
 				return this.roughdirection[MathHelper.floor_double(this.player.rotationYaw * 4.0 / 360.0 + 0.5) & 3];
 			} else if (var.equalsIgnoreCase("finedirection")) {
@@ -643,7 +760,7 @@ public class InGameInfoCore {
 				return "\u00a7r  " + "   " + this.abrfinedirection[(direction / 2 + this.abrfinedirection.length) % this.abrfinedirection.length] + "   " + this.abrfinedirection[(direction / 2 + this.abrfinedirection.length + 1) % this.abrfinedirection.length] + "   ";
 			} else if (var.equalsIgnoreCase("fps")) {
 				return this.minecraftClient.debug.substring(0, this.minecraftClient.debug.indexOf(" fps"));
-			} else if (var.equalsIgnoreCase("mouseover")) {
+			} else if (var.equalsIgnoreCase("mouseovername")) {
 				MovingObjectPosition objectMouseOver = this.minecraftClient.objectMouseOver;
 				if (objectMouseOver != null) {
 					if (objectMouseOver.typeOfHit == EnumMovingObjectType.ENTITY) {
@@ -670,6 +787,14 @@ public class InGameInfoCore {
 						if (block != null) {
 							return Integer.toString(block.blockID);
 						}
+					}
+				}
+				return "0";
+			} else if (var.equalsIgnoreCase("mouseovermetadata")) {
+				MovingObjectPosition objectMouseOver = this.minecraftClient.objectMouseOver;
+				if (objectMouseOver != null) {
+					if (objectMouseOver.typeOfHit == EnumMovingObjectType.TILE) {
+						return Integer.toString(this.world.getBlockMetadata(objectMouseOver.blockX, objectMouseOver.blockY, objectMouseOver.blockZ));
 					}
 				}
 				return "0";
@@ -721,11 +846,11 @@ public class InGameInfoCore {
 				return Long.toString(this.seed);
 			} else if (var.equalsIgnoreCase("difficulty")) {
 				// this should use GameSettings.DIFFICULTIES, but it isn't exposed
-				return StatCollector.translateToLocal(this.difficulties[this.minecraftClient.gameSettings.difficulty]);
+				return I18n.getString(this.difficulties[this.minecraftClient.gameSettings.difficulty]);
 			} else if (var.equalsIgnoreCase("difficultyid")) {
 				return Integer.toString(this.minecraftClient.gameSettings.difficulty);
 			} else if (var.equalsIgnoreCase("gamemode")) {
-				return StatCollector.translateToLocal("selectWorld.gameMode." + this.world.getWorldInfo().getGameType().getName());
+				return I18n.getString("selectWorld.gameMode." + this.world.getWorldInfo().getGameType().getName());
 			} else if (var.equalsIgnoreCase("gamemodeid")) {
 				return Integer.toString(this.world.getWorldInfo().getGameType().getID());
 			} else if (var.equalsIgnoreCase("healthpoints")) {
@@ -758,6 +883,20 @@ public class InGameInfoCore {
 				return this.player.getEntityName();
 			} else if (var.equalsIgnoreCase("texturepack") || var.equalsIgnoreCase("resourcepack")) {
 				return this.minecraftClient.getResourcePackRepository().getResourcePackName();
+			} else if (var.matches("nearbyplayername\\d+")) {
+				updateNearbyPlayers();
+				int index = Integer.parseInt(var.substring(16));
+				if (this.nearbyPlayers.length > index) {
+					return this.nearbyPlayers[index].getEntityName();
+				}
+				return "";
+			} else if (var.matches("nearbyplayerdistance\\d+")) {
+				updateNearbyPlayers();
+				int index = Integer.parseInt(var.substring(20));
+				if (this.nearbyPlayers.length > index) {
+					return String.format("%.2f", this.nearbyPlayers[index].getDistanceToEntity(this.player));
+				}
+				return "-1";
 			} else if (var.equalsIgnoreCase("entitiesrendered")) {
 				String str = this.minecraftClient.getEntityDebug();
 				return str.substring(str.indexOf(' ') + 1, str.indexOf('/'));
@@ -809,7 +948,7 @@ public class InGameInfoCore {
 				return Boolean.toString(this.player.isEating());
 			} else if (var.equalsIgnoreCase("invulnerable")) {
 				return Boolean.toString(this.player.isEntityInvulnerable());
-			} else if (var.matches("(equipped|helmet|chestplate|leggings|boots)(name|maxdamage|damage|damageleft)")) {
+			} else if (var.matches("(equipped|helmet|chestplate|leggings|boots)(name|maxdamage|damage|damageleft|icon)")) {
 				ItemStack itemStack;
 
 				if (var.startsWith("equipped")) {
@@ -837,6 +976,10 @@ public class InGameInfoCore {
 					return Integer.toString(itemStack != null && itemStack.isItemStackDamageable() ? itemStack.getItemDamageForDisplay() : 0);
 				} else if (var.endsWith("damageleft")) {
 					return Integer.toString(itemStack != null && itemStack.isItemStackDamageable() ? itemStack.getMaxDamage() + 1 - itemStack.getItemDamageForDisplay() : 0);
+				} else if (var.endsWith("icon")) {
+					InfoItem item = new InfoItem(this.minecraftClient.fontRenderer, itemStack);
+					this.infoItemQueue.add(item);
+					return getIconTag(item);
 				}
 			} else if (var.equalsIgnoreCase("equippedquantity")) {
 				ItemStack item = this.player.getCurrentEquippedItem();
@@ -845,6 +988,7 @@ public class InGameInfoCore {
 				}
 				return "0";
 			} else if (var.matches("potioneffect\\d+")) {
+				updatePotionEffects();
 				int index = Integer.parseInt(var.substring(12));
 				if (this.potionEffects.length > index) {
 					String str = StatCollector.translateToLocal(this.potionEffects[index].getEffectName());
@@ -863,12 +1007,14 @@ public class InGameInfoCore {
 				}
 				return "";
 			} else if (var.matches("potionduration\\d+")) {
+				updatePotionEffects();
 				int index = Integer.parseInt(var.substring(14));
 				if (this.potionEffects.length > index) {
 					return Potion.getDurationString(this.potionEffects[index]);
 				}
 				return "0:00";
 			} else if (var.matches("potiondurationticks\\d+")) {
+				updatePotionEffects();
 				int index = Integer.parseInt(var.substring(19));
 				if (this.potionEffects.length > index) {
 					return Integer.toString((this.potionEffects[index]).getDuration());
@@ -882,6 +1028,40 @@ public class InGameInfoCore {
 				return Long.toString(Runtime.getRuntime().freeMemory());
 			} else if (var.equalsIgnoreCase("memused")) {
 				return Long.toString(Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory());
+			} else if (var.equalsIgnoreCase("server")) {
+				String str = this.player.sendQueue.getNetManager().getSocketAddress().toString();
+				int i = str.indexOf("/");
+				int j = str.indexOf(":");
+				if (i < 0) {
+					return "localhost";
+				}
+
+				String name = (i == 0) ? str.substring(i + 1, j) : str.substring(0, i);
+				String port = str.substring(j + 1);
+				return name + (port.equals("25565") ? "" : ":" + port);
+			} else if (var.equalsIgnoreCase("servername")) {
+				String str = this.player.sendQueue.getNetManager().getSocketAddress().toString();
+				int i = str.indexOf("/");
+				if (i < 0) {
+					return "localhost";
+				} else if (i == 0) {
+					return str.substring(i + 1, str.indexOf(":"));
+				}
+				return str.substring(0, i);
+			} else if (var.equalsIgnoreCase("serverip")) {
+				String str = this.player.sendQueue.getNetManager().getSocketAddress().toString();
+				int i = str.indexOf("/");
+				if (i < 0) {
+					return "127.0.0.1";
+				}
+				return str.substring(i + 1, str.indexOf(":"));
+			} else if (var.equalsIgnoreCase("serverport")) {
+				String str = this.player.sendQueue.getNetManager().getSocketAddress().toString();
+				int i = str.indexOf("/");
+				if (i < 0) {
+					return "-1";
+				}
+				return str.substring(str.indexOf(":") + 1);
 			} else if (var.equalsIgnoreCase("black")) {
 				return "\u00a70";
 			} else if (var.equalsIgnoreCase("darkblue") || var.equalsIgnoreCase("navy")) {
@@ -934,6 +1114,42 @@ public class InGameInfoCore {
 		return "{" + var + "}";
 	}
 
+	private String getIconTag(Info info) {
+		String str = "";
+		for (int i = 0; i < 16 && this.minecraftClient.fontRenderer.getStringWidth(str) < info.getWidth(); i++) {
+			str += " ";
+		}
+		return "{ICON|" + str + "}";
+	}
+
+	private void updatePotionEffects() {
+		if (this.potionEffects == null) {
+			Collection<PotionEffect> potionEffectCollection = this.player.getActivePotionEffects();
+			this.potionEffects = new PotionEffect[potionEffectCollection.size()];
+			if (potionEffectCollection.size() > 0) {
+				int index = 0;
+
+				for (PotionEffect potionEffect : potionEffectCollection) {
+					this.potionEffects[index++] = potionEffect;
+				}
+			}
+		}
+	}
+
+	private void updateNearbyPlayers() {
+		if (this.nearbyPlayers == null) {
+			List<EntityPlayer> playerList = new ArrayList<EntityPlayer>();
+			for (EntityPlayer player : (List<EntityPlayer>) this.world.playerEntities) {
+				if (player != this.player && !player.isSneaking()) {
+					playerList.add(player);
+				}
+			}
+
+			Collections.sort(playerList, this.playerDistanceComparator);
+			this.nearbyPlayers = playerList.toArray(new EntityPlayer[playerList.size()]);
+		}
+	}
+
 	private int getItemCountInInventory(EntityPlayer entityPlayer, int itemID, int itemDamage) {
 		if (entityPlayer.inventory.hasItem(itemID)) {
 			int count = 0;
@@ -953,17 +1169,5 @@ public class InGameInfoCore {
 
 	private boolean isSlimeChunk(int x, int z) {
 		return this.hasSeed && (new Random(this.seed + x * x * 4987142 + x * 5947611 + z * z * 4392871 + z * 389711 ^ 987234911).nextInt(10) == 0);
-	}
-
-	private void drawLeftAlignedString(FontRenderer fontRenderer, String str, int x, int y, int color) {
-		fontRenderer.drawStringWithShadow(str, x, y, color);
-	}
-
-	private void drawCenteredString(FontRenderer fontRenderer, String str, int x, int y, int color) {
-		fontRenderer.drawStringWithShadow(str, x - fontRenderer.getStringWidth(str) / 2, y, color);
-	}
-
-	private void drawRightAlignedString(FontRenderer fontRenderer, String str, int x, int y, int color) {
-		fontRenderer.drawStringWithShadow(str, x - fontRenderer.getStringWidth(str), y, color);
 	}
 }

@@ -1,8 +1,8 @@
 package com.github.lunatrius.ingameinfo.command;
 
-import com.github.lunatrius.ingameinfo.Config;
 import com.github.lunatrius.ingameinfo.InGameInfoCore;
-import com.github.lunatrius.ingameinfo.InGameInfoXML;
+import com.github.lunatrius.ingameinfo.Ticker;
+import com.github.lunatrius.ingameinfo.lib.Reference;
 import net.minecraft.command.CommandBase;
 import net.minecraft.command.ICommandSender;
 import net.minecraft.command.WrongUsageException;
@@ -76,9 +76,8 @@ public class InGameInfoCommand extends CommandBase {
 			} else if (args[0].equalsIgnoreCase("load")) {
 				commandSender.sendChatToPlayer(ChatMessageComponent.createFromTranslationWithSubstitutions("commands.igi.load", args[1]));
 				if (this.core.loadConfig(args[1])) {
-					Config config = InGameInfoXML.instance.config;
-					config.setConfigName(args[1]);
-					config.save();
+					Reference.config.setConfigName(args[1]);
+					Reference.config.save();
 				}
 				return;
 			} else if (args[0].equalsIgnoreCase("save")) {
@@ -87,11 +86,11 @@ public class InGameInfoCommand extends CommandBase {
 				return;
 			} else if (args[0].equalsIgnoreCase("enable")) {
 				commandSender.sendChatToPlayer(ChatMessageComponent.createFromTranslationKey("commands.igi.enable"));
-				InGameInfoXML.instance.enabled = true;
+				Ticker.enabled = true;
 				return;
 			} else if (args[0].equalsIgnoreCase("disable")) {
 				commandSender.sendChatToPlayer(ChatMessageComponent.createFromTranslationKey("commands.igi.disable"));
-				InGameInfoXML.instance.enabled = false;
+				Ticker.enabled = false;
 				return;
 			}
 		}
