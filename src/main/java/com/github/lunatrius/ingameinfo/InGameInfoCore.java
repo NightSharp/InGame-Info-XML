@@ -417,7 +417,7 @@ public class InGameInfoCore {
 				String current = getValue(value, 0);
 
 				for (Value operand : value.values.subList(1, size)) {
-					String next = getValue(operand);
+					String next = getReplacedValue(operand);
 					if (!current.equals(next)) {
 						return Boolean.toString(false);
 					}
@@ -435,7 +435,7 @@ public class InGameInfoCore {
 		} else if (value.type.equals(ValueType.CONCAT)) {
 			String str = "";
 			for (Value val : value.values) {
-				str += getValue(val);
+				str += getReplacedValue(val);
 			}
 			return str;
 		} else if (value.type.equals(ValueType.MAX)) {
@@ -604,7 +604,6 @@ public class InGameInfoCore {
 				this.infoItemQueue.add(icon);
 				return getIconTag(icon);
 			} catch (Exception e) {
-				e.printStackTrace();
 				return "?";
 			}
 		}
@@ -612,12 +611,16 @@ public class InGameInfoCore {
 		return "";
 	}
 
+	private String getReplacedValue(Value value) {
+		return replaceVariables(getValue(value));
+	}
+
 	private String getValue(Value value, int index) {
-		return getValue(value.values.get(index));
+		return getReplacedValue(value.values.get(index));
 	}
 
 	private int getIntValue(Value value) {
-		return Integer.parseInt(getValue(value));
+		return Integer.parseInt(getReplacedValue(value));
 	}
 
 	private int getIntValue(Value value, int index) {
@@ -625,7 +628,7 @@ public class InGameInfoCore {
 	}
 
 	private double getDoubleValue(Value value) {
-		return Double.parseDouble(getValue(value));
+		return Double.parseDouble(getReplacedValue(value));
 	}
 
 	private double getDoubleValue(Value value, int index) {
@@ -633,7 +636,7 @@ public class InGameInfoCore {
 	}
 
 	private boolean getBooleanValue(Value value) {
-		return Boolean.parseBoolean(getValue(value));
+		return Boolean.parseBoolean(getReplacedValue(value));
 	}
 
 	private boolean getBooleanValue(Value value, int index) {
@@ -879,6 +882,10 @@ public class InGameInfoCore {
 				return this.world.getBiomeGenForCoords(this.playerPosition[0], this.playerPosition[2]).biomeName;
 			} else if (var.equalsIgnoreCase("biomeid")) {
 				return Integer.toString(this.world.getBiomeGenForCoords(this.playerPosition[0], this.playerPosition[2]).biomeID);
+			} else if (var.equalsIgnoreCase("temperature")) {
+				return String.format(Locale.ENGLISH, "%.0f", this.world.getBiomeGenForCoords(this.playerPosition[0], this.playerPosition[2]).temperature * 100);
+			} else if (var.equalsIgnoreCase("humidity")) {
+				return String.format(Locale.ENGLISH, "%.0f", this.world.getBiomeGenForCoords(this.playerPosition[0], this.playerPosition[2]).rainfall * 100);
 			} else if (var.equalsIgnoreCase("username")) {
 				return this.player.getEntityName();
 			} else if (var.equalsIgnoreCase("texturepack") || var.equalsIgnoreCase("resourcepack")) {
