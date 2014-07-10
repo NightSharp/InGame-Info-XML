@@ -25,7 +25,7 @@ ext.build = System.getenv().BUILD_NUMBER ?: "dev"
 ext.modversion = "${config.version.major}.${config.version.minor}.${config.version.micro}.${build}"
 
 group = "com.github.lunatrius"
-version = version = "${config.version.minecraft}-${modversion}"
+version = "${config.version.minecraft}-${modversion}"
 archivesBaseName = config.mod.id
 
 minecraft {
@@ -114,10 +114,5 @@ task release(dependsOn: "signJar", type: Copy) {
 
 task sourceJar(type: Jar) {
     from sourceSets.main.allSource
-    classifier = 'src'
+    classifier = "sources"
 }
-
-// temporary :deobf fix
-// reobf {
-//     deobfFile = new net.minecraftforge.gradle.delayed.DelayedFile(project, "build/tmp/deobfBinJar/deobfed.jar")
-// }
